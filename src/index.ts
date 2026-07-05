@@ -98,7 +98,7 @@ type ShellFn = (parts: TemplateStringsArray, ...args: string[]) => any
 
 async function collectGitBranch($: ShellFn, directory: string): Promise<string> {
   try {
-    const r = await $`git -C "${directory}" branch --show-current 2>/dev/null`
+    const r = await $`git branch --show-current`.cwd(directory).nothrow().quiet()
     return (r.stdout?.toString() ?? "").trim()
   } catch {
     return ""
@@ -107,7 +107,7 @@ async function collectGitBranch($: ShellFn, directory: string): Promise<string> 
 
 async function collectGitDiff($: ShellFn, directory: string): Promise<{ added: number; deleted: number }> {
   try {
-    const r = await $`git -C "${directory}" diff --numstat 2>/dev/null`
+    const r = await $`git diff --numstat`.cwd(directory).nothrow().quiet()
     const lines = (r.stdout?.toString() ?? "").trim().split("\n").filter(Boolean)
     let added = 0, deleted = 0
     for (const line of lines) {
@@ -261,3 +261,5 @@ export const StatuslinePlugin: Plugin = async ({ $, directory }) => {
     },
   }
 }
+
+export default StatuslinePlugin
