@@ -15,11 +15,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ── Defaults ───────────────────────────────────────────────────────
 const DEFAULT_CONFIG = {
     items: [
+        { type: "custom", command: "basename \"$(pwd)\"", format: "📁 {output}" },
         { type: "git-branch", format: "🌿 {branch}" },
         { type: "git-diff", format: "📝 +{added} ~{deleted}" },
         { type: "openspec", format: "{status}" },
     ],
-    separator: "  ",
+    separator: " │ ",
     refreshInterval: 3000,
     periodicInterval: 10000,
 };
