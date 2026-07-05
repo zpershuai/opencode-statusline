@@ -2,13 +2,9 @@
 
 OpenCode plugin that displays configurable status items in tmux pane borders.
 
-## Features
-
-- **git-branch** — current branch name
-- **git-diff** — added/deleted lines in unstaged changes
-- **openspec** — OpenSpec progress (runs bundled `openspec-status.sh`)
-- **custom** — arbitrary shell commands
-- Fully configurable via `~/.config/opencode/statusline.json`
+```
+📁 opencode │ 🌿 main │ 📝 +42 ~17 │ 📘 add-auth │ 🧩 A:3/5 ✔3 │ ✅ Tasks 5/7 [████░░░] 71%
+```
 
 ## Installation
 
@@ -19,14 +15,6 @@ OpenCode plugin that displays configurable status items in tmux pane borders.
 }
 ```
 
-Or from GitHub:
-
-```jsonc
-{
-  "plugin": ["github:zpershuai/opencode-statusline"]
-}
-```
-
 ## Configuration
 
 Create `~/.config/opencode/statusline.json`:
@@ -34,10 +22,10 @@ Create `~/.config/opencode/statusline.json`:
 ```json
 {
   "items": [
-    { "type": "git-branch", "format": " {branch}" },
-    { "type": "git-diff", "format": "+{added}~{deleted}" },
-    { "type": "openspec", "format": "{status}" },
-    { "type": "custom", "command": "date '+%H:%M'", "format": "🕐 {output}" }
+    { "type": "custom", "command": "basename \"$(pwd)\"", "format": "📁 {output}" },
+    { "type": "git-branch", "format": "🌿 {branch}" },
+    { "type": "git-diff", "format": "📝 +{added} ~{deleted}" },
+    { "type": "openspec", "format": "{status}" }
   ],
   "separator": " │ ",
   "refreshInterval": 3000,
@@ -47,10 +35,10 @@ Create `~/.config/opencode/statusline.json`:
 
 ### Status items
 
-| type | description | default format |
+| type | description | format placeholders |
 |---|---|---|
-| `git-branch` | Current git branch | ` {branch}` |
-| `git-diff` | Unstaged added/deleted lines | `+{added}~{deleted}` |
+| `git-branch` | Current git branch | `{branch}` |
+| `git-diff` | Unstaged added/deleted lines | `{added}`, `{deleted}` |
 | `openspec` | OpenSpec change progress | `{status}` |
 | `custom` | Arbitrary shell command | `{output}` |
 
