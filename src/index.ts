@@ -1,29 +1,79 @@
 /**
- * OpenSpec Statusline Plugin for OpenCode
+ * OpenCode Statusline Plugin
  *
- * Runs openspec-status.sh on session events and writes the output
- * to /tmp/opencode-pane-status-<TMUX_PANE> so tmux pane-border-format
- * can display per-pane OpenSpec progress.
+ * Collects configurable status items (git branch, changed lines, openspec progress, etc.)
+ * and writes the output to a tmux pane status file.
  *
  * Each tmux pane gets its own status file, so multiple opencode
  * instances in split panes show independent project status.
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { writeFileSync, unlinkSync } from "node:fs"
+import { writeFileSync, unlinkSync, existsSync, readFileSync } from "node:fs"
+import { join, dirname } from "node:path"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 
-const STATUS_SCRIPT =
-  process.env.OPENSPEC_STATUS_SCRIPT ??
-  join(homedir(), ".claude", "openspec-status.sh")
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// ── Types ──────────────────────────────────────────────────────────
+
+interface StatusItem {
+  type: "git-branch" | "git-diff" | "openspec" | "custom"
+  format?: string
+  command?: string
+  maxLength?: number
+}
+
+interface PluginConfig {
+  items: StatusItem[]
+  separator: string
+  refreshInterval: number
+  periodicInterval: number
+}
+
+// ── Defaults ───────────────────────────────────────────────────────
+
+const DEFAULT_CONFIG: PluginConfig = {
+  items: [
+    { type: "git-branch", format: " {branch}" },
+    { type: "git-diff", format: "+{added}~{deleted}" },
+    { type: "openspec", format: "{status}" },
+  ],
+  separator: " │ ",
+  refreshInterval: 3000,
+  periodicInterval: 10000,
+}
+
+// ── Config loader ──────────────────────────────────────────────────
+
+const CONFIG_PATHS = [
+  join(homedir(), ".config", "opencode", "statusline.json"),
+  join(homedir(), ".config", "opencode", "statusline.jsonc"),
+]
+
+function loadConfig(): PluginConfig {
+  for (const p of CONFIG_PATHS) {
+    if (existsSync(p)) {
+      try {
+        const raw = readFileSync(p, "utf-8")
+        const parsed = JSON.parse(raw)
+        return {
+          items: parsed.items ?? DEFAULT_CONFIG.items,
+          separator: parsed.separator ?? DEFAULT_CONFIG.separator,
+          refreshInterval: parsed.refreshInterval ?? DEFAULT_CONFIG.refreshInterval,
+          periodicInterval: parsed.periodicInterval ?? DEFAULT_CONFIG.periodicInterval,
+        }
+      } catch {}
+    }
+  }
+  return DEFAULT_CONFIG
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
 
 const STATUS_PREFIX =
-  process.env.OPENSPEC_STATUS_PREFIX ??
-  "/tmp/opencode-pane-status-"
-
-const MIN_INTERVAL_MS = Number(process.env.OPENSPEC_STATUS_INTERVAL) || 3000
-const PERIODIC_MS = Number(process.env.OPENSPEC_STATUS_PERIODIC) || 10_000
+  process.env.OPENCODE_STATUS_PREFIX ?? "/tmp/opencode-pane-status-"
 
 function sanitizePane(pane: string): string {
   return pane.replace(/[^a-zA-Z0-9_-]/g, "_")
@@ -35,7 +85,74 @@ function getStatusFile(): string | null {
   return `${STATUS_PREFIX}${sanitizePane(pane)}`
 }
 
-export const OpenSpecStatuslinePlugin: Plugin = async ({ $, directory }) => {
+function truncate(s: string, max?: number): string {
+  if (max === undefined || s.length <= max) return s
+  return s.slice(0, max - 1) + "…"
+}
+
+// ── Status collectors ──────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ShellFn = (parts: TemplateStringsArray, ...args: string[]) => any
+
+async function collectGitBranch($: ShellFn, directory: string): Promise<string> {
+  try {
+    const r = await $`git -C "${directory}" branch --show-current 2>/dev/null`
+    return (r.stdout?.toString() ?? "").trim()
+  } catch {
+    return ""
+  }
+}
+
+async function collectGitDiff($: ShellFn, directory: string): Promise<{ added: number; deleted: number }> {
+  try {
+    const r = await $`git -C "${directory}" diff --numstat 2>/dev/null`
+    const lines = (r.stdout?.toString() ?? "").trim().split("\n").filter(Boolean)
+    let added = 0, deleted = 0
+    for (const line of lines) {
+      const [a, d] = line.split("\t")
+      added += parseInt(a, 10) || 0
+      deleted += parseInt(d, 10) || 0
+    }
+    return { added, deleted }
+  } catch {
+    return { added: 0, deleted: 0 }
+  }
+}
+
+async function collectOpenspec($: ShellFn, directory: string): Promise<string> {
+  try {
+    const scriptPath = join(__dirname, "..", "scripts", "openspec-status.sh")
+    const r = await $`bash "${scriptPath}" 2>/dev/null`.cwd(directory).nothrow().quiet()
+    return (r.stdout?.toString() ?? "").trim()
+  } catch {
+    return ""
+  }
+}
+
+async function collectCustom($: ShellFn, command: string, directory: string): Promise<string> {
+  try {
+    const r = await $`${command} 2>/dev/null`.cwd(directory).nothrow().quiet()
+    return (r.stdout?.toString() ?? "").trim()
+  } catch {
+    return ""
+  }
+}
+
+// ── Format ─────────────────────────────────────────────────────────
+
+function formatItem(item: StatusItem, data: Record<string, string | number>): string {
+  let fmt = item.format ?? ""
+  for (const [key, value] of Object.entries(data)) {
+    fmt = fmt.replace(`{${key}}`, String(value))
+  }
+  return truncate(fmt, item.maxLength)
+}
+
+// ── Main plugin ────────────────────────────────────────────────────
+
+export const StatuslinePlugin: Plugin = async ({ $, directory }) => {
+  const config = loadConfig()
   const statusFile = getStatusFile()
 
   let pending: ReturnType<typeof setTimeout> | null = null
@@ -45,17 +162,47 @@ export const OpenSpecStatuslinePlugin: Plugin = async ({ $, directory }) => {
     if (!statusFile) return
 
     try {
-      const result =
-        await $`bash ${STATUS_SCRIPT} --all 2>/dev/null`.cwd(directory).nothrow().quiet()
-      const output = (result.stdout?.toString() ?? "").trim()
+      const parts: string[] = []
 
-      const hasActiveChange = output && !output.includes("no active change")
-      writeFileSync(statusFile, hasActiveChange ? output : "", "utf-8")
+      for (const item of config.items) {
+        switch (item.type) {
+          case "git-branch": {
+            const branch = await collectGitBranch($, directory)
+            if (branch) {
+              parts.push(formatItem(item, { branch }))
+            }
+            break
+          }
+          case "git-diff": {
+            const { added, deleted } = await collectGitDiff($, directory)
+            if (added > 0 || deleted > 0) {
+              parts.push(formatItem(item, { added, deleted }))
+            }
+            break
+          }
+          case "openspec": {
+            const status = await collectOpenspec($, directory)
+            if (status && !status.includes("no active change")) {
+              parts.push(formatItem(item, { status }))
+            }
+            break
+          }
+          case "custom": {
+            if (item.command) {
+              const output = await collectCustom($, item.command, directory)
+              if (output) {
+                parts.push(formatItem(item, { output }))
+              }
+            }
+            break
+          }
+        }
+      }
+
+      writeFileSync(statusFile, parts.join(config.separator), "utf-8")
       lastWrite = Date.now()
     } catch {
-      try {
-        writeFileSync(statusFile, "", "utf-8")
-      } catch {}
+      try { writeFileSync(statusFile, "", "utf-8") } catch {}
     }
   }
 
@@ -64,7 +211,7 @@ export const OpenSpecStatuslinePlugin: Plugin = async ({ $, directory }) => {
     if (pending) return
 
     const elapsed = Date.now() - lastWrite
-    const delay = Math.max(0, MIN_INTERVAL_MS - elapsed)
+    const delay = Math.max(0, config.refreshInterval - elapsed)
 
     pending = setTimeout(async () => {
       pending = null
@@ -76,15 +223,13 @@ export const OpenSpecStatuslinePlugin: Plugin = async ({ $, directory }) => {
 
   const interval = setInterval(() => {
     scheduleRefresh()
-  }, PERIODIC_MS)
+  }, config.periodicInterval)
 
   const cleanup = () => {
     if (interval) clearInterval(interval)
     if (pending) clearTimeout(pending)
     if (statusFile) {
-      try {
-        unlinkSync(statusFile)
-      } catch {}
+      try { unlinkSync(statusFile) } catch {}
     }
   }
   process.on("exit", cleanup)
