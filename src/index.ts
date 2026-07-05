@@ -1,13 +1,3 @@
-/**
- * OpenCode Statusline Plugin
- *
- * Collects configurable status items (git branch, changed lines, openspec progress, etc.)
- * and writes the output to a tmux pane status file.
- *
- * Each tmux pane gets its own status file, so multiple opencode
- * instances in split panes show independent project status.
- */
-
 import type { Plugin } from "@opencode-ai/plugin"
 import { writeFileSync, unlinkSync, existsSync, readFileSync, appendFileSync } from "node:fs"
 import { join, dirname } from "node:path"
@@ -16,13 +6,18 @@ import { fileURLToPath } from "node:url"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
+// Always-visible startup confirmation (written before anything else can fail)
+const BOOT_FILE = "/tmp/opencode-statusline-boot.log"
+try {
+  appendFileSync(BOOT_FILE, `[${new Date().toISOString()}] module loaded pid=${process.pid} TMUX_PANE=${process.env.TMUX_PANE ?? "unset"}\n`, "utf-8")
+} catch {}
+
 // ── Debug ───────────────────────────────────────────────────────────
 
 const DEBUG = process.env.OPENCODE_STATUS_DEBUG === "1"
 const DEBUG_FILE = "/tmp/opencode-statusline-debug.log"
 
 function debug(msg: string, ...args: unknown[]) {
-  if (!DEBUG) return
   const ts = new Date().toISOString()
   const line = `[${ts}] ${msg} ${args.map(a => JSON.stringify(a)).join(" ")}\n`
   try { appendFileSync(DEBUG_FILE, line, "utf-8") } catch {}
@@ -89,13 +84,32 @@ const STATUS_PREFIX =
   process.env.OPENCODE_STATUS_PREFIX ?? "/tmp/opencode-pane-status-"
 
 function sanitizePane(pane: string): string {
-  return pane.replace(/[^a-zA-Z0-9_-]/g, "_")
+  // tmux pane ids are like %0, %1, %175; keep % so the file path matches #{pane_id}
+  return pane.replace(/[^a-zA-Z0-9_%:-]/g, "_")
 }
 
 function getStatusFile(): string | null {
   const pane = process.env.TMUX_PANE
   if (!pane) return null
   return `${STATUS_PREFIX}${sanitizePane(pane)}`
+}
+
+function getFallbackStatusFile(): string | null {
+  const pane = process.env.TMUX_PANE
+  if (pane) return getStatusFile()
+  // opencode may spawn the plugin in a child without TMUX_PANE; try parent's pane
+  try {
+    const ppid = process.ppid
+    if (!ppid) return null
+    const envPath = `/proc/${ppid}/environ`
+    if (!existsSync(envPath)) return null
+    const env = readFileSync(envPath, "utf-8")
+    const match = env.match(/TMUX_PANE=([^\0]+)/)
+    if (match) {
+      return `${STATUS_PREFIX}${sanitizePane(match[1])}`
+    }
+  } catch {}
+  return null
 }
 
 function truncate(s: string, max?: number): string {
@@ -168,16 +182,27 @@ export const StatuslinePlugin: Plugin = async ({ $, directory }) => {
   debug("===== STATUSLINE PLUGIN INIT =====")
   debug("directory", directory)
   debug("TMUX_PANE", process.env.TMUX_PANE ?? "NOT SET")
+  debug("ppid", process.ppid)
   debug("__dirname", __dirname)
 
   const config = loadConfig()
   debug("config", config)
 
-  const statusFile = getStatusFile()
+  let statusFile = getStatusFile()
+  if (!statusFile) {
+    statusFile = getFallbackStatusFile()
+    debug("fallback statusFile", statusFile ?? "NULL")
+  }
   debug("statusFile", statusFile ?? "NULL")
 
   let pending: ReturnType<typeof setTimeout> | null = null
   let lastWrite = 0
+
+  // Safety: if timers aren't available in this runtime, bail out
+  if (typeof setTimeout !== "function" || typeof setInterval !== "function") {
+    debug("ERROR: timers not available in this runtime")
+    return {}
+  }
 
   async function refresh() {
     debug("refresh called, statusFile=", statusFile ?? "NULL")
@@ -234,7 +259,7 @@ export const StatuslinePlugin: Plugin = async ({ $, directory }) => {
       writeFileSync(statusFile, final, "utf-8")
       lastWrite = Date.now()
     } catch (err) {
-      debug("REFRESH ERROR", String(err))
+      debug("REFRESH ERROR", String(err), (err as Error).stack)
       try { writeFileSync(statusFile, "", "utf-8") } catch {}
     }
   }
