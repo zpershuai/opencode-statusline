@@ -36,11 +36,11 @@ interface PluginConfig {
 
 const DEFAULT_CONFIG: PluginConfig = {
   items: [
-    { type: "git-branch", format: " {branch}" },
-    { type: "git-diff", format: "+{added}~{deleted}" },
+    { type: "git-branch", format: "🌿 {branch}" },
+    { type: "git-diff", format: "📝 +{added} ~{deleted}" },
     { type: "openspec", format: "{status}" },
   ],
-  separator: " │ ",
+  separator: "  ",
   refreshInterval: 3000,
   periodicInterval: 10000,
 }
