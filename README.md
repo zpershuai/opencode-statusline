@@ -11,7 +11,7 @@ The plugin runs `openspec-status.sh` periodically and on session events, writing
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
-  "plugin": ["opencode-openspec-statusline@latest"]
+  "plugin": ["opencode-statusline@latest"]
 }
 ```
 
@@ -19,7 +19,7 @@ Or from GitHub:
 
 ```jsonc
 {
-  "plugin": ["github:zpershuai/openspec-statusline"]
+  "plugin": ["github:zpershuai/opencode-statusline"]
 }
 ```
 
