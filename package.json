@@ -1,6 +1,6 @@
 {
   "name": "opencode-statusline",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "OpenCode plugin that displays OpenSpec progress in tmux pane border via status files",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
