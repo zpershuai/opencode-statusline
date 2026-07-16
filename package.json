@@ -1,13 +1,15 @@
 {
   "name": "opencode-statusline",
-  "version": "2.0.0",
+  "version": "2.0.3",
   "description": "OpenCode TUI plugin that displays project and session status in the Sidebar",
   "type": "module",
   "exports": {
     "./tui": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts",
-      "config": { "enabled": true }
+      "config": {
+        "enabled": true
+      }
     }
   },
   "files": [
@@ -15,8 +17,9 @@
     "scripts/"
   ],
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build"
+    "build": "rm -rf dist && bun ./scripts/build.ts && tsc --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
   },
   "keywords": [
     "opencode",

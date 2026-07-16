@@ -135,18 +135,53 @@ async function collectItem(item: StatusItem, directory: string): Promise<PanelIt
   }
 }
 
-function OpenSpecItem(props: { item: OpenSpecPanelItem; context: TuiSlotContext }) {
-  const [expanded, setExpanded] = createSignal(false)
-  const toggle = () => setExpanded((value) => !value)
-
+// Match OpenCode built-in sidebar collapse rows: row box + onMouseDown + stopPropagation.
+function CollapseHeader(props: {
+  expanded: () => boolean
+  label: string
+  color: any
+  bold?: boolean
+  onToggle: () => void
+}) {
   return (
-    <box flexDirection="column">
-      <text fg={props.context.theme.current.primary} onMouseUp={toggle}>
-        {expanded() ? "▼" : "▶"} {props.item.title}
+    <box
+      flexDirection="row"
+      gap={1}
+      width="100%"
+      onMouseDown={(event: any) => {
+        event?.stopPropagation?.()
+        props.onToggle()
+      }}
+    >
+      <text fg={props.color} selectable={false}>
+        {props.expanded() ? "▼" : "▶"}
       </text>
-      <Show when={expanded() && props.item.details.length > 0}>
-        <box flexDirection="column" paddingLeft={1}>
-          <For each={props.item.details}>{(detail) => <text fg={props.context.theme.current.textMuted}>{detail}</text>}</For>
+      <text fg={props.color} selectable={false}>
+        {props.bold ? <b>{props.label}</b> : props.label}
+      </text>
+    </box>
+  )
+}
+
+function OpenSpecItem(props: {
+  item: OpenSpecPanelItem
+  context: TuiSlotContext
+  expanded: () => boolean
+  onToggle: () => void
+}) {
+  return (
+    <box flexDirection="column" width="100%">
+      <CollapseHeader
+        expanded={props.expanded}
+        label={props.item.title}
+        color={props.context.theme.current.primary}
+        onToggle={props.onToggle}
+      />
+      <Show when={props.expanded() && props.item.details.length > 0}>
+        <box flexDirection="column" paddingLeft={1} width="100%">
+          <For each={props.item.details}>
+            {(detail) => <text fg={props.context.theme.current.textMuted}>{detail}</text>}
+          </For>
         </box>
       </Show>
     </box>
@@ -160,13 +195,11 @@ function SidebarPanel(props: {
   panel: () => PanelState
   refresh: () => void
   revision: () => number
+  sidebarExpanded: () => boolean
+  toggleSidebar: () => void
+  isOpenSpecExpanded: (title: string) => boolean
+  toggleOpenSpec: (title: string) => void
 }) {
-  const [expanded, setExpanded] = createSignal(props.api.kv.get("opencode-statusline.sidebar.expanded", true))
-  const toggle = () => {
-    const next = !expanded()
-    setExpanded(next)
-    props.api.kv.set("opencode-statusline.sidebar.expanded", next)
-  }
   const sessionStatus = () => {
     props.revision()
     return props.api.state.session.status(props.sessionID)?.type ?? "idle"
@@ -178,25 +211,56 @@ function SidebarPanel(props: {
   const completedTodos = () => todos().filter((todo) => todo.status === "completed").length
 
   return (
-    <box flexDirection="column" borderStyle="rounded" borderColor={props.context.theme.current.border} paddingLeft={1} paddingRight={1}>
-      <text fg={props.context.theme.current.primary} onMouseUp={toggle}>
-        <b>{expanded() ? "▼" : "▶"} Status · {basename(props.api.state.path.directory)}</b>
-      </text>
-      <Show when={expanded()}>
-        <box flexDirection="column">
+    <box
+      flexDirection="column"
+      width="100%"
+      borderStyle="rounded"
+      borderColor={props.context.theme.current.border}
+      paddingLeft={1}
+      paddingRight={1}
+    >
+      <CollapseHeader
+        expanded={props.sidebarExpanded}
+        label={`Status · ${basename(props.api.state.path.directory)}`}
+        color={props.context.theme.current.primary}
+        bold
+        onToggle={props.toggleSidebar}
+      />
+      <Show when={props.sidebarExpanded()}>
+        <box flexDirection="column" width="100%">
           <text fg={sessionStatus() === "busy" ? props.context.theme.current.warning : props.context.theme.current.textMuted}>
             ● Session {sessionStatus()}
           </text>
-          <For each={props.panel().items}>{(item) => item.kind === "openspec"
-            ? <OpenSpecItem item={item} context={props.context} />
-            : <text>{item.value}</text>
-          }</For>
+          <For each={props.panel().items}>
+            {(item) =>
+              item.kind === "openspec" ? (
+                <OpenSpecItem
+                  item={item}
+                  context={props.context}
+                  expanded={() => props.isOpenSpecExpanded(item.title)}
+                  onToggle={() => props.toggleOpenSpec(item.title)}
+                />
+              ) : (
+                <text>{item.value}</text>
+              )
+            }
+          </For>
           <Show when={todos().length > 0}>
-            <text fg={props.context.theme.current.textMuted}>✓ Tasks {completedTodos()}/{todos().length}</text>
+            <text fg={props.context.theme.current.textMuted}>
+              ✓ Tasks {completedTodos()}/{todos().length}
+            </text>
           </Show>
-          <text fg={props.context.theme.current.textMuted} onMouseUp={props.refresh}>
-            ↻ Refresh {props.panel().updatedAt?.toLocaleTimeString() ?? "…"}
-          </text>
+          <box
+            width="100%"
+            onMouseDown={(event: any) => {
+              event?.stopPropagation?.()
+              props.refresh()
+            }}
+          >
+            <text fg={props.context.theme.current.textMuted} selectable={false}>
+              ↻ Refresh {props.panel().updatedAt?.toLocaleTimeString() ?? "…"}
+            </text>
+          </box>
         </box>
       </Show>
     </box>
@@ -206,8 +270,26 @@ function SidebarPanel(props: {
 function createSidebar(api: TuiPluginApi, config: PluginConfig): TuiSlotPlugin {
   const [panel, setPanel] = createSignal<PanelState>({ items: [] })
   const [revision, setRevision] = createSignal(0)
+  // Lifted state survives SidebarPanel remounts from slot re-render.
+  const [sidebarExpanded, setSidebarExpanded] = createSignal(api.kv.get("opencode-statusline.sidebar.expanded", true))
+  const [openSpecExpanded, setOpenSpecExpanded] = createSignal<Record<string, boolean>>(
+    api.kv.get("opencode-statusline.openspec.expanded", {}),
+  )
   let pending: ReturnType<typeof setTimeout> | undefined
   let refreshing = false
+
+  const toggleSidebar = () => {
+    const next = !sidebarExpanded()
+    setSidebarExpanded(next)
+    api.kv.set("opencode-statusline.sidebar.expanded", next)
+  }
+
+  const isOpenSpecExpanded = (title: string) => openSpecExpanded()[title] === true
+  const toggleOpenSpec = (title: string) => {
+    const next = { ...openSpecExpanded(), [title]: !isOpenSpecExpanded(title) }
+    setOpenSpecExpanded(next)
+    api.kv.set("opencode-statusline.openspec.expanded", next)
+  }
 
   const refresh = async () => {
     if (refreshing) return
@@ -250,7 +332,20 @@ function createSidebar(api: TuiPluginApi, config: PluginConfig): TuiSlotPlugin {
     order: 60,
     slots: {
       sidebar_content(context, input) {
-        return <SidebarPanel api={api} context={context} sessionID={input.session_id} panel={panel} refresh={scheduleRefresh} revision={revision} />
+        return (
+          <SidebarPanel
+            api={api}
+            context={context}
+            sessionID={input.session_id}
+            panel={panel}
+            refresh={scheduleRefresh}
+            revision={revision}
+            sidebarExpanded={sidebarExpanded}
+            toggleSidebar={toggleSidebar}
+            isOpenSpecExpanded={isOpenSpecExpanded}
+            toggleOpenSpec={toggleOpenSpec}
+          />
+        )
       },
     },
   }
