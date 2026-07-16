@@ -1,263 +1,182 @@
-/**
- * OpenCode Statusline Plugin
- *
- * Collects configurable status items (git branch, changed lines, openspec progress, etc.)
- * and writes the output to a tmux pane status file.
- *
- * Each tmux pane gets its own status file, so multiple opencode
- * instances in split panes show independent project status.
- */
-import { writeFileSync, unlinkSync, existsSync, readFileSync, appendFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { jsxs as _jsxs, jsx as _jsx } from "@opentui/solid/jsx-runtime";
+import { createSignal, For, Show } from "solid-js";
+import { exec, execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// ── Debug ───────────────────────────────────────────────────────────
-const DEBUG = process.env.OPENCODE_STATUS_DEBUG === "1";
-const DEBUG_FILE = "/tmp/opencode-statusline-debug.log";
-function debug(msg, ...args) {
-    if (!DEBUG)
-        return;
-    const ts = new Date().toISOString();
-    const line = `[${ts}] ${msg} ${args.map(a => JSON.stringify(a)).join(" ")}\n`;
-    try {
-        appendFileSync(DEBUG_FILE, line, "utf-8");
-    }
-    catch { }
-}
-// ── Defaults ───────────────────────────────────────────────────────
+const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 const DEFAULT_CONFIG = {
     items: [
-        { type: "custom", command: "basename \"$(pwd)\"", format: "📁 {output}" },
         { type: "git-branch", format: "🌿 {branch}" },
         { type: "git-diff", format: "📝 +{added} ~{deleted}" },
         { type: "openspec", format: "{status}" },
     ],
-    separator: " │ ",
-    refreshInterval: 3000,
-    periodicInterval: 10000,
+    refreshInterval: 500,
+    periodicInterval: 3000,
 };
-// ── Config loader ──────────────────────────────────────────────────
 const CONFIG_PATHS = [
+    join(homedir(), ".config", "opencode", "sidebar.json"),
+    // Retain the former configuration file as a migration path.
     join(homedir(), ".config", "opencode", "statusline.json"),
-    join(homedir(), ".config", "opencode", "statusline.jsonc"),
 ];
 function loadConfig() {
-    for (const p of CONFIG_PATHS) {
-        if (existsSync(p)) {
-            try {
-                const raw = readFileSync(p, "utf-8");
-                const parsed = JSON.parse(raw);
-                return {
-                    items: parsed.items ?? DEFAULT_CONFIG.items,
-                    separator: parsed.separator ?? DEFAULT_CONFIG.separator,
-                    refreshInterval: parsed.refreshInterval ?? DEFAULT_CONFIG.refreshInterval,
-                    periodicInterval: parsed.periodicInterval ?? DEFAULT_CONFIG.periodicInterval,
-                };
-            }
-            catch { }
+    for (const path of CONFIG_PATHS) {
+        if (!existsSync(path))
+            continue;
+        try {
+            const parsed = JSON.parse(readFileSync(path, "utf-8"));
+            return {
+                items: parsed.items ?? DEFAULT_CONFIG.items,
+                refreshInterval: parsed.refreshInterval ?? DEFAULT_CONFIG.refreshInterval,
+                periodicInterval: Math.max(500, parsed.periodicInterval ?? DEFAULT_CONFIG.periodicInterval),
+            };
+        }
+        catch {
+            // Fall back to the defaults when a user configuration is incomplete.
         }
     }
     return DEFAULT_CONFIG;
 }
-// ── Helpers ────────────────────────────────────────────────────────
-const STATUS_PREFIX = process.env.OPENCODE_STATUS_PREFIX ?? "/tmp/opencode-pane-status-";
-function sanitizePane(pane) {
-    return pane.replace(/[^a-zA-Z0-9_-]/g, "_");
+function truncate(value, maxLength) {
+    if (maxLength === undefined || value.length <= maxLength)
+        return value;
+    return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
 }
-function getStatusFile() {
-    const pane = process.env.TMUX_PANE;
-    if (!pane)
-        return null;
-    return `${STATUS_PREFIX}${sanitizePane(pane)}`;
-}
-function truncate(s, max) {
-    if (max === undefined || s.length <= max)
-        return s;
-    return s.slice(0, max - 1) + "…";
-}
-async function collectGitBranch($, directory) {
-    try {
-        const r = await $ `git branch --show-current`.cwd(directory).nothrow().quiet();
-        return (r.stdout?.toString() ?? "").trim();
-    }
-    catch {
-        return "";
-    }
-}
-async function collectGitDiff($, directory) {
-    try {
-        const r = await $ `git diff --numstat`.cwd(directory).nothrow().quiet();
-        const lines = (r.stdout?.toString() ?? "").trim().split("\n").filter(Boolean);
-        let added = 0, deleted = 0;
-        for (const line of lines) {
-            const [a, d] = line.split("\t");
-            added += parseInt(a, 10) || 0;
-            deleted += parseInt(d, 10) || 0;
-        }
-        return { added, deleted };
-    }
-    catch {
-        return { added: 0, deleted: 0 };
-    }
-}
-async function collectOpenspec($, directory) {
-    try {
-        const scriptPath = join(__dirname, "..", "scripts", "openspec-status.sh");
-        const r = await $ `bash "${scriptPath}" 2>/dev/null`.cwd(directory).nothrow().quiet();
-        return (r.stdout?.toString() ?? "").trim();
-    }
-    catch {
-        return "";
-    }
-}
-async function collectCustom($, command, directory) {
-    try {
-        const r = await $ `${command} 2>/dev/null`.cwd(directory).nothrow().quiet();
-        return (r.stdout?.toString() ?? "").trim();
-    }
-    catch {
-        return "";
-    }
-}
-// ── Format ─────────────────────────────────────────────────────────
 function formatItem(item, data) {
-    let fmt = item.format ?? "";
+    let format = item.format ?? "";
     for (const [key, value] of Object.entries(data)) {
-        fmt = fmt.replace(`{${key}}`, String(value));
+        format = format.replaceAll(`{${key}}`, String(value));
     }
-    return truncate(fmt, item.maxLength);
+    return truncate(format, item.maxLength);
 }
-// ── Main plugin ────────────────────────────────────────────────────
-export const StatuslinePlugin = async ({ $, directory }) => {
-    debug("===== STATUSLINE PLUGIN INIT =====");
-    debug("directory", directory);
-    debug("TMUX_PANE", process.env.TMUX_PANE ?? "NOT SET");
-    debug("__dirname", __dirname);
-    const config = loadConfig();
-    debug("config", config);
-    const statusFile = getStatusFile();
-    debug("statusFile", statusFile ?? "NULL");
-    let pending = null;
-    let lastWrite = 0;
-    async function refresh() {
-        debug("refresh called, statusFile=", statusFile ?? "NULL");
-        if (!statusFile) {
-            debug("SKIP: no statusFile");
-            return;
+async function commandOutput(command, directory) {
+    try {
+        const { stdout } = await execAsync(command, { cwd: directory, timeout: 5_000 });
+        return stdout.trim();
+    }
+    catch {
+        return "";
+    }
+}
+async function collectItem(item, directory) {
+    switch (item.type) {
+        case "git-branch": {
+            const branch = await commandOutput("git branch --show-current", directory);
+            return branch ? { kind: "text", value: formatItem(item, { branch }) } : null;
         }
-        try {
-            const parts = [];
-            for (const item of config.items) {
-                debug("processing item", { type: item.type });
-                switch (item.type) {
-                    case "git-branch": {
-                        const branch = await collectGitBranch($, directory);
-                        debug("git-branch result", branch);
-                        if (branch) {
-                            parts.push(formatItem(item, { branch }));
-                        }
-                        break;
-                    }
-                    case "git-diff": {
-                        const { added, deleted } = await collectGitDiff($, directory);
-                        debug("git-diff result", { added, deleted });
-                        if (added > 0 || deleted > 0) {
-                            parts.push(formatItem(item, { added, deleted }));
-                        }
-                        break;
-                    }
-                    case "openspec": {
-                        const status = await collectOpenspec($, directory);
-                        debug("openspec result", status);
-                        if (status && !status.includes("no active change")) {
-                            parts.push(formatItem(item, { status }));
-                        }
-                        break;
-                    }
-                    case "custom": {
-                        if (item.command) {
-                            const output = await collectCustom($, item.command, directory);
-                            debug("custom result", { command: item.command, output });
-                            if (output) {
-                                parts.push(formatItem(item, { output }));
-                            }
-                        }
-                        break;
-                    }
-                }
+        case "git-diff": {
+            const output = await commandOutput("git diff --numstat", directory);
+            let added = 0;
+            let deleted = 0;
+            for (const line of output.split("\n").filter(Boolean)) {
+                const [addedText, deletedText] = line.split("\t");
+                added += Number.parseInt(addedText, 10) || 0;
+                deleted += Number.parseInt(deletedText, 10) || 0;
             }
-            const final = parts.join(config.separator);
-            debug("WRITING to statusFile", final);
-            writeFileSync(statusFile, final, "utf-8");
-            lastWrite = Date.now();
+            return added || deleted ? { kind: "text", value: formatItem(item, { added, deleted }) } : null;
         }
-        catch (err) {
-            debug("REFRESH ERROR", String(err));
+        case "openspec": {
             try {
-                writeFileSync(statusFile, "", "utf-8");
+                const script = join(__dirname, "..", "scripts", "openspec-status.sh");
+                const { stdout } = await execFileAsync("bash", [script], { cwd: directory, timeout: 5_000 });
+                const status = stdout.trim();
+                if (!status || status.includes("no active change"))
+                    return null;
+                const parts = formatItem(item, { status }).split("│").map((part) => part.trim()).filter(Boolean);
+                return { kind: "openspec", title: parts[0], details: parts.slice(1) };
             }
-            catch { }
+            catch {
+                return null;
+            }
+        }
+        case "custom": {
+            const output = item.command ? await commandOutput(item.command, directory) : "";
+            return output ? { kind: "text", value: formatItem(item, { output }) } : null;
         }
     }
-    function scheduleRefresh() {
-        debug("scheduleRefresh, statusFile=", statusFile ?? "NULL", "pending=", !!pending);
-        if (!statusFile)
+}
+function OpenSpecItem(props) {
+    const [expanded, setExpanded] = createSignal(false);
+    const toggle = () => setExpanded((value) => !value);
+    return (_jsxs("box", { flexDirection: "column", children: [_jsxs("text", { fg: props.context.theme.current.primary, onMouseUp: toggle, children: [expanded() ? "▼" : "▶", " ", props.item.title] }), _jsx(Show, { when: expanded() && props.item.details.length > 0, children: _jsx("box", { flexDirection: "column", paddingLeft: 1, children: _jsx(For, { each: props.item.details, children: (detail) => _jsx("text", { fg: props.context.theme.current.textMuted, children: detail }) }) }) })] }));
+}
+function SidebarPanel(props) {
+    const [expanded, setExpanded] = createSignal(props.api.kv.get("opencode-statusline.sidebar.expanded", true));
+    const toggle = () => {
+        const next = !expanded();
+        setExpanded(next);
+        props.api.kv.set("opencode-statusline.sidebar.expanded", next);
+    };
+    const sessionStatus = () => {
+        props.revision();
+        return props.api.state.session.status(props.sessionID)?.type ?? "idle";
+    };
+    const todos = () => {
+        props.revision();
+        return props.api.state.session.todo(props.sessionID);
+    };
+    const completedTodos = () => todos().filter((todo) => todo.status === "completed").length;
+    return (_jsxs("box", { flexDirection: "column", borderStyle: "rounded", borderColor: props.context.theme.current.border, paddingLeft: 1, paddingRight: 1, children: [_jsx("text", { fg: props.context.theme.current.primary, onMouseUp: toggle, children: _jsxs("b", { children: [expanded() ? "▼" : "▶", " Status \u00B7 ", basename(props.api.state.path.directory)] }) }), _jsx(Show, { when: expanded(), children: _jsxs("box", { flexDirection: "column", children: [_jsxs("text", { fg: sessionStatus() === "busy" ? props.context.theme.current.warning : props.context.theme.current.textMuted, children: ["\u25CF Session ", sessionStatus()] }), _jsx(For, { each: props.panel().items, children: (item) => item.kind === "openspec"
+                                ? _jsx(OpenSpecItem, { item: item, context: props.context })
+                                : _jsx("text", { children: item.value }) }), _jsx(Show, { when: todos().length > 0, children: _jsxs("text", { fg: props.context.theme.current.textMuted, children: ["\u2713 Tasks ", completedTodos(), "/", todos().length] }) }), _jsxs("text", { fg: props.context.theme.current.textMuted, onMouseUp: props.refresh, children: ["\u21BB Refresh ", props.panel().updatedAt?.toLocaleTimeString() ?? "…"] })] }) })] }));
+}
+function createSidebar(api, config) {
+    const [panel, setPanel] = createSignal({ items: [] });
+    const [revision, setRevision] = createSignal(0);
+    let pending;
+    let refreshing = false;
+    const refresh = async () => {
+        if (refreshing)
             return;
+        refreshing = true;
+        try {
+            const items = (await Promise.all(config.items.map((item) => collectItem(item, api.state.path.directory))))
+                .filter((item) => item !== null);
+            setPanel({ items, updatedAt: new Date() });
+        }
+        finally {
+            refreshing = false;
+            setRevision((value) => value + 1);
+        }
+    };
+    const scheduleRefresh = () => {
         if (pending)
             return;
-        const elapsed = Date.now() - lastWrite;
-        const delay = Math.max(0, config.refreshInterval - elapsed);
-        pending = setTimeout(async () => {
-            pending = null;
-            await refresh();
-        }, delay);
-    }
-    debug("initial refresh");
-    await refresh();
-    const interval = setInterval(() => {
-        debug("periodic tick");
-        scheduleRefresh();
-    }, config.periodicInterval);
-    const cleanup = () => {
-        debug("cleanup");
-        if (interval)
-            clearInterval(interval);
+        pending = setTimeout(() => {
+            pending = undefined;
+            void refresh();
+        }, config.refreshInterval);
+    };
+    const unsubscribers = [
+        api.event.on("message.part.updated", scheduleRefresh),
+        api.event.on("todo.updated", scheduleRefresh),
+        api.event.on("session.updated", scheduleRefresh),
+        api.event.on("session.idle", scheduleRefresh),
+        api.event.on("file.edited", scheduleRefresh),
+        api.event.on("vcs.branch.updated", scheduleRefresh),
+    ];
+    const interval = setInterval(scheduleRefresh, config.periodicInterval);
+    api.lifecycle.onDispose(() => {
         if (pending)
             clearTimeout(pending);
-        if (statusFile) {
-            try {
-                unlinkSync(statusFile);
-            }
-            catch { }
-        }
-    };
-    process.on("exit", cleanup);
-    process.on("SIGINT", cleanup);
-    process.on("SIGTERM", cleanup);
-    debug("plugin init complete, returning hooks");
+        clearInterval(interval);
+        unsubscribers.forEach((unsubscribe) => unsubscribe());
+    });
+    void refresh();
     return {
-        event: async ({ event }) => {
-            const e = event;
-            const type = typeof e.type === "string" ? e.type : "";
-            debug("event", type);
-            switch (type) {
-                case "session.idle":
-                case "session.created":
-                case "session.updated":
-                case "session.error":
-                case "file.edited":
-                    scheduleRefresh();
-                    break;
-            }
-        },
-        "tool.execute.after": async (input) => {
-            const tool = typeof input?.tool === "string" ? input.tool : "";
-            debug("tool.execute.after", tool);
-            if (["write", "edit", "bash"].includes(tool)) {
-                scheduleRefresh();
-            }
+        order: 60,
+        slots: {
+            sidebar_content(context, input) {
+                return _jsx(SidebarPanel, { api: api, context: context, sessionID: input.session_id, panel: panel, refresh: scheduleRefresh, revision: revision });
+            },
         },
     };
+}
+const tui = async (api) => {
+    api.slots.register(createSidebar(api, loadConfig()));
 };
-export default StatuslinePlugin;
+export default { id: "opencode-statusline", tui };

@@ -1,10 +1,15 @@
 {
   "name": "opencode-statusline",
   "version": "1.0.3",
-  "description": "OpenCode plugin that displays OpenSpec progress in tmux pane border via status files",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "description": "OpenCode TUI plugin that displays project and session status in the Sidebar",
   "type": "module",
+  "exports": {
+    "./tui": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "config": { "enabled": true }
+    }
+  },
   "files": [
     "dist/",
     "scripts/"
@@ -18,8 +23,8 @@
     "opencode-plugin",
     "openspec",
     "statusline",
-    "tmux",
-    "pane"
+    "sidebar",
+    "tui"
   ],
   "author": "perry",
   "license": "MIT",
@@ -27,9 +32,18 @@
     "type": "git",
     "url": "git+https://github.com/zpershuai/opencode-statusline.git"
   },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.18.2",
+    "@opentui/core": ">=0.4.3",
+    "@opentui/solid": ">=0.4.3",
+    "solid-js": "^1.9.12"
+  },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.0.0",
+    "@opencode-ai/plugin": "^1.18.2",
+    "@opentui/core": "^0.4.3",
+    "@opentui/solid": "^0.4.3",
     "@types/node": "^20.0.0",
+    "solid-js": "^1.9.12",
     "typescript": "^5.0.0"
   },
   "engines": {
