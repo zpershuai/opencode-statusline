@@ -1,6 +1,6 @@
 {
   "name": "opencode-statusline",
-  "version": "1.0.3",
+  "version": "2.0.0",
   "description": "OpenCode TUI plugin that displays project and session status in the Sidebar",
   "type": "module",
   "exports": {
