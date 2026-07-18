@@ -110,32 +110,23 @@ render_change_status() {
   task_total="$(echo "$progress" | awk '{print $2}')"
   task_status="$(echo "$progress" | awk '{print $3}')"
 
-  if [ "$SHOW_ALL" -eq 1 ]; then
-    case "$task_status" in
-      complete)    art_summary="🧩 ✅ complete" ;;
-      in-progress) art_summary="🧩 🚧 in-progress" ;;
-      no-tasks)    art_summary="🧩 💤 no-tasks" ;;
-      *)           art_summary="🧩 ℹ️ $task_status" ;;
-    esac
-  else
-    status_json="$("${OPENSPEC[@]}" status --change "$change" --json 2>/dev/null)"
-    if [ -z "$status_json" ]; then
-      echo "📘 $change | OpenSpec status error"
-      return
-    fi
+  status_json="$("${OPENSPEC[@]}" status --change "$change" --json 2>/dev/null)"
+  if [ -z "$status_json" ]; then
+    echo "📘 $change | OpenSpec status error"
+    return
+  fi
 
-    done=$(echo "$status_json"    | jq '[.artifacts[]? | select(.status=="done")]   | length' 2>/dev/null)
-    ready=$(echo "$status_json"   | jq '[.artifacts[]? | select(.status=="ready")]  | length' 2>/dev/null)
-    blocked=$(echo "$status_json" | jq '[.artifacts[]? | select(.status=="blocked")]| length' 2>/dev/null)
-    total=$(echo "$status_json"   | jq '.artifacts | length' 2>/dev/null)
+  done=$(echo "$status_json"    | jq '[.artifacts[]? | select(.status=="done")]   | length' 2>/dev/null)
+  ready=$(echo "$status_json"   | jq '[.artifacts[]? | select(.status=="ready")]  | length' 2>/dev/null)
+  blocked=$(echo "$status_json" | jq '[.artifacts[]? | select(.status=="blocked")]| length' 2>/dev/null)
+  total=$(echo "$status_json"   | jq '.artifacts | length' 2>/dev/null)
 
-    art_summary="🧩 A:${done}/${total} ✔${done}"
-    if [ "$ready" -gt 0 ]; then
-      art_summary="$art_summary ●${ready}"
-    fi
-    if [ "$blocked" -gt 0 ]; then
-      art_summary="$art_summary ○${blocked}"
-    fi
+  art_summary="🧩 A:${done}/${total} ✔${done}"
+  if [ "$ready" -gt 0 ]; then
+    art_summary="$art_summary ●${ready}"
+  fi
+  if [ "$blocked" -gt 0 ]; then
+    art_summary="$art_summary ○${blocked}"
   fi
 
   if [ "$task_total" -gt 0 ]; then

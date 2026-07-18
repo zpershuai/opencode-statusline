@@ -80,12 +80,12 @@ async function collectItem(item, directory) {
   switch (item.type) {
     case "git-branch": {
       const branch = await commandOutput("git branch --show-current", directory);
-      return branch ? {
+      return branch ? [{
         kind: "text",
         value: formatItem(item, {
           branch
         })
-      } : null;
+      }] : [];
     }
     case "git-diff": {
       const output = await commandOutput("git diff --numstat", directory);
@@ -97,46 +97,49 @@ async function collectItem(item, directory) {
         added += Number.parseInt(addedText, 10) || 0;
         deleted += Number.parseInt(deletedText, 10) || 0;
       }
-      return added || deleted ? {
+      return added || deleted ? [{
         kind: "text",
         value: formatItem(item, {
           added,
           deleted
         })
-      } : null;
+      }] : [];
     }
     case "openspec": {
       try {
         const script = join(__dirname2, "..", "scripts", "openspec-status.sh");
         const {
           stdout
-        } = await execFileAsync("bash", [script], {
+        } = await execFileAsync("bash", [script, "--all"], {
           cwd: directory,
           timeout: 5000
         });
-        const status = stdout.trim();
-        if (!status || status.includes("no active change"))
-          return null;
-        const parts = formatItem(item, {
-          status
-        }).split("\u2502").map((part) => part.trim()).filter(Boolean);
-        return {
-          kind: "openspec",
-          title: parts[0],
-          details: parts.slice(1)
-        };
+        const lines = stdout.trim().split(`
+`).map((line) => line.trim()).filter((line) => line && !line.includes("no active change"));
+        if (lines.length === 0)
+          return [];
+        return lines.map((status) => {
+          const parts = formatItem(item, {
+            status
+          }).split("\u2502").map((part) => part.trim()).filter(Boolean);
+          return {
+            kind: "openspec",
+            title: parts[0],
+            details: parts.slice(1)
+          };
+        });
       } catch {
-        return null;
+        return [];
       }
     }
     case "custom": {
       const output = item.command ? await commandOutput(item.command, directory) : "";
-      return output ? {
+      return output ? [{
         kind: "text",
         value: formatItem(item, {
           output
         })
-      } : null;
+      }] : [];
     }
   }
 }
@@ -348,7 +351,7 @@ function createSidebar(api, config) {
       return;
     refreshing = true;
     try {
-      const items = (await Promise.all(config.items.map((item) => collectItem(item, api.state.path.directory)))).filter((item) => item !== null);
+      const items = (await Promise.all(config.items.map((item) => collectItem(item, api.state.path.directory)))).flat();
       setPanel({
         items,
         updatedAt: new Date

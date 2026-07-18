@@ -8,10 +8,11 @@ OpenCode TUI plugin that displays configurable project and session status in the
 🌿 main
 📝 +42 ~17
 ▶ 📘 add-auth
+▶ 📘 fix-login
 ✓ Tasks 5/7
 ```
 
-Expand the OpenSpec row to see its artifact and task-progress entries individually.
+All OpenSpec changes are listed. Expand a row to see its artifact and task-progress entries.
 
 ## Installation
 

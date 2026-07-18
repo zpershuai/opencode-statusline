@@ -99,11 +99,11 @@ async function commandOutput(command: string, directory: string): Promise<string
   }
 }
 
-async function collectItem(item: StatusItem, directory: string): Promise<PanelItem | null> {
+async function collectItem(item: StatusItem, directory: string): Promise<PanelItem[]> {
   switch (item.type) {
     case "git-branch": {
       const branch = await commandOutput("git branch --show-current", directory)
-      return branch ? { kind: "text", value: formatItem(item, { branch }) } : null
+      return branch ? [{ kind: "text", value: formatItem(item, { branch }) }] : []
     }
     case "git-diff": {
       const output = await commandOutput("git diff --numstat", directory)
@@ -114,23 +114,29 @@ async function collectItem(item: StatusItem, directory: string): Promise<PanelIt
         added += Number.parseInt(addedText, 10) || 0
         deleted += Number.parseInt(deletedText, 10) || 0
       }
-      return added || deleted ? { kind: "text", value: formatItem(item, { added, deleted }) } : null
+      return added || deleted ? [{ kind: "text", value: formatItem(item, { added, deleted }) }] : []
     }
     case "openspec": {
       try {
         const script = join(__dirname, "..", "scripts", "openspec-status.sh")
-        const { stdout } = await execFileAsync("bash", [script], { cwd: directory, timeout: 5_000 })
-        const status = stdout.trim()
-        if (!status || status.includes("no active change")) return null
-        const parts = formatItem(item, { status }).split("│").map((part) => part.trim()).filter(Boolean)
-        return { kind: "openspec", title: parts[0], details: parts.slice(1) }
+        const { stdout } = await execFileAsync("bash", [script, "--all"], { cwd: directory, timeout: 5_000 })
+        const lines = stdout
+          .trim()
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line && !line.includes("no active change"))
+        if (lines.length === 0) return []
+        return lines.map((status) => {
+          const parts = formatItem(item, { status }).split("│").map((part) => part.trim()).filter(Boolean)
+          return { kind: "openspec" as const, title: parts[0], details: parts.slice(1) }
+        })
       } catch {
-        return null
+        return []
       }
     }
     case "custom": {
       const output = item.command ? await commandOutput(item.command, directory) : ""
-      return output ? { kind: "text", value: formatItem(item, { output }) } : null
+      return output ? [{ kind: "text", value: formatItem(item, { output }) }] : []
     }
   }
 }
@@ -295,8 +301,7 @@ function createSidebar(api: TuiPluginApi, config: PluginConfig): TuiSlotPlugin {
     if (refreshing) return
     refreshing = true
     try {
-      const items = (await Promise.all(config.items.map((item) => collectItem(item, api.state.path.directory))))
-        .filter((item): item is PanelItem => item !== null)
+      const items = (await Promise.all(config.items.map((item) => collectItem(item, api.state.path.directory)))).flat()
       setPanel({ items, updatedAt: new Date() })
     } finally {
       refreshing = false
